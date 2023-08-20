@@ -253,6 +253,10 @@ impl Scanner<'_> {
     fn scan_token(&mut self) {
         self.skip_whitespace();
 
+        if self.is_done() {
+            return;
+        }
+
         self.start = self.current;
         let c = self.advance();
 
@@ -386,6 +390,54 @@ mod tests {
                 line: 1,
                 text: ""
             }]
+        );
+    }
+
+    #[test]
+    fn test_string_with_whitespace() {
+        let text = String::from("\"hello\" \n");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token {
+                    ty: TokenType::String,
+                    col: 1,
+                    line: 1,
+                    text: "\"hello\"",
+                },
+                Token {
+                    ty: TokenType::EOF,
+                    col: 1,
+                    line: 2,
+                    text: ""
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn test_string() {
+        let text = String::from("\"hello\"");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token {
+                    ty: TokenType::String,
+                    col: 1,
+                    line: 1,
+                    text: "\"hello\"",
+                },
+                Token {
+                    ty: TokenType::EOF,
+                    col: 7,
+                    line: 1,
+                    text: ""
+                }
+            ]
         );
     }
 
