@@ -23,7 +23,7 @@ pub enum TokenType {
     Equal,
     EqualEqual,
     Greater,
-    GreatEqual,
+    GreaterEqual,
     Less,
     LessEqual,
 
@@ -50,11 +50,10 @@ pub enum TokenType {
     Var,
     While,
 
-    Error,
     EOF,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Token<'a> {
     pub ty: TokenType,
     pub text: &'a str,
@@ -71,6 +70,7 @@ struct Scanner<'a> {
     line: u64,
     col: u64,
     keywords: HashMap<&'static str, TokenType>,
+    err: Option<Error>,
 }
 
 pub struct Error {
@@ -92,9 +92,9 @@ impl fmt::Debug for Error {
 pub fn scan_tokens<'a>(source: &'a String) -> Result<Vec<Token<'a>>, Error> {
     let mut scanner = Scanner::new(&source);
 
-    let result = scanner.scan_tokens();
+    scanner.scan_tokens();
 
-    match result {
+    match scanner.err {
         Some(err) => Err(err),
         None => Ok(scanner.tokens),
     }
@@ -130,6 +130,23 @@ impl Scanner<'_> {
             ]
             .into_iter()
             .collect(),
+            err: None,
+        }
+    }
+
+    fn scan_tokens(&mut self) {
+        while !self.is_done() {
+            self.scan_token();
+        }
+
+        match self.err {
+            Some(_) => {}
+            None => self.tokens.push(Token {
+                ty: TokenType::EOF,
+                text: "",
+                line: self.line,
+                col: self.col,
+            }),
         }
     }
 
@@ -157,6 +174,19 @@ impl Scanner<'_> {
         }
     }
 
+    fn peek_next(&mut self) -> char {
+        if let Some((index, _)) = self.source.peek() {
+            let next = self.original[*index..].chars().next().unwrap().len_utf8();
+            if let Some(next_char) = self.original[index + next..].chars().next() {
+                next_char
+            } else {
+                '\0'
+            }
+        } else {
+            '\0'
+        }
+    }
+
     fn match_val(&mut self, expected: char) -> bool {
         if self.is_at_end() {
             return false;
@@ -170,23 +200,29 @@ impl Scanner<'_> {
         return true;
     }
 
-    fn skip_whitespace(&mut self, c: char) {
+    fn skip_whitespace(&mut self) {
         loop {
-            match c {
-                ' ' | '\r' | '\t' => {}
+            match self.peek() {
+                ' ' | '\r' | '\t' => {
+                    self.advance();
+                }
                 '\n' => {
                     self.line += 1;
+                    self.col = 0;
+                    self.advance();
                 }
                 '/' => {
-                    if self.peek() == '/' {
+                    if self.peek_next() == '/' {
                         while self.peek() != '\n' && !self.is_at_end() {
                             self.advance();
                         }
                     } else {
-                        self.make_token(TokenType::Slash);
+                        break;
                     }
-                },
-                _ => return,
+                }
+                _ => {
+                    break;
+                }
             }
         }
     }
@@ -198,7 +234,7 @@ impl Scanner<'_> {
             ty,
             text,
             line: self.line,
-            col: self.col,
+            col: self.col - text.len() as u64 + 1,
         })
     }
 
@@ -210,9 +246,442 @@ impl Scanner<'_> {
         c.is_numeric()
     }
 
-    fn scan_tokens(&mut self) -> Option<Error> {
+    fn is_done(&mut self) -> bool {
+        self.err.is_some() || self.is_at_end()
+    }
+
+    fn scan_token(&mut self) {
+        self.skip_whitespace();
+
+        self.start = self.current;
         let c = self.advance();
 
-        unimplemented!()
+        match c {
+            '(' => self.make_token(TokenType::LeftParen),
+            ')' => self.make_token(TokenType::RightParen),
+            '{' => self.make_token(TokenType::LeftBrace),
+            '}' => self.make_token(TokenType::RightBrace),
+            ';' => self.make_token(TokenType::SemiColon),
+            ',' => self.make_token(TokenType::Comma),
+            '.' => self.make_token(TokenType::Dot),
+            '-' => self.make_token(TokenType::Minus),
+            '+' => self.make_token(TokenType::Plus),
+            '/' => self.make_token(TokenType::Slash),
+            '*' => self.make_token(TokenType::Star),
+            '!' => {
+                if self.match_val('=') {
+                    self.make_token(TokenType::BangEqual);
+                } else {
+                    self.make_token(TokenType::Bang);
+                }
+            }
+            '=' => {
+                if self.match_val('=') {
+                    self.make_token(TokenType::EqualEqual);
+                } else {
+                    self.make_token(TokenType::Equal);
+                }
+            }
+            '<' => {
+                if self.match_val('=') {
+                    self.make_token(TokenType::LessEqual);
+                } else {
+                    self.make_token(TokenType::Less);
+                }
+            }
+            '>' => {
+                if self.match_val('=') {
+                    self.make_token(TokenType::GreaterEqual);
+                } else {
+                    self.make_token(TokenType::Greater);
+                }
+            }
+            '"' => self.string(),
+            _ => {
+                if Scanner::is_alpha(c) {
+                    self.identifier();
+                } else if Scanner::is_digit(c) {
+                    self.number();
+                } else {
+                    self.err = Some(Error {
+                        what: format!("Unexpected character {}", c),
+                        line: self.line,
+                        col: self.col,
+                    });
+                }
+            }
+        };
+    }
+
+    fn string(&mut self) {
+        while self.peek() != '"' && !self.is_at_end() {
+            if self.peek() == '\n' {
+                self.line += 1;
+            }
+
+            self.advance();
+        }
+
+        if self.is_at_end() {
+            self.err = Some(Error {
+                what: "Unterminated string.".to_string(),
+                line: self.line,
+                col: self.col,
+            });
+
+            return;
+        }
+
+        self.advance();
+
+        self.make_token(TokenType::String);
+    }
+
+    fn identifier(&mut self) {
+        while Scanner::is_alpha(self.peek()) || Scanner::is_digit(self.peek()) {
+            self.advance();
+        }
+
+        let ident_text = &self.original[self.start..self.current];
+
+        let token_type: TokenType = *self
+            .keywords
+            .get(&ident_text)
+            .unwrap_or(&TokenType::Identifier);
+
+        self.make_token(token_type);
+    }
+
+    fn number(&mut self) {
+        while Scanner::is_digit(self.peek()) {
+            self.advance();
+        }
+
+        if self.peek() == '.' && Scanner::is_digit(self.peek_next()) {
+            self.advance();
+
+            while Scanner::is_digit(self.peek()) {
+                self.advance();
+            }
+        }
+
+        self.make_token(TokenType::Number);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty() {
+        let text = String::from("");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec![Token {
+                ty: TokenType::EOF,
+                col: 0,
+                line: 1,
+                text: ""
+            }]
+        );
+    }
+
+    #[test]
+    fn test_keywords() {
+        let text =
+            String::from("and class else for fun if nil or print return super this true var while");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+        let list = vec![
+            Token {
+                ty: TokenType::And,
+                col: 1,
+                line: 1,
+                text: "and",
+            },
+            Token {
+                ty: TokenType::Class,
+                col: 5,
+                line: 1,
+                text: "class",
+            },
+            Token {
+                ty: TokenType::Else,
+                col: 11,
+                line: 1,
+                text: "else",
+            },
+            Token {
+                ty: TokenType::For,
+                col: 16,
+                line: 1,
+                text: "for",
+            },
+            Token {
+                ty: TokenType::Fun,
+                col: 20,
+                line: 1,
+                text: "fun",
+            },
+            Token {
+                ty: TokenType::If,
+                col: 24,
+                line: 1,
+                text: "if",
+            },
+            Token {
+                ty: TokenType::Nil,
+                col: 27,
+                line: 1,
+                text: "nil",
+            },
+            Token {
+                ty: TokenType::Or,
+                col: 31,
+                line: 1,
+                text: "or",
+            },
+            Token {
+                ty: TokenType::Print,
+                col: 34,
+                line: 1,
+                text: "print",
+            },
+            Token {
+                ty: TokenType::Return,
+                col: 40,
+                line: 1,
+                text: "return",
+            },
+            Token {
+                ty: TokenType::Super,
+                col: 47,
+                line: 1,
+                text: "super",
+            },
+            Token {
+                ty: TokenType::This,
+                col: 53,
+                line: 1,
+                text: "this",
+            },
+            Token {
+                ty: TokenType::True,
+                col: 58,
+                line: 1,
+                text: "true",
+            },
+            Token {
+                ty: TokenType::Var,
+                col: 63,
+                line: 1,
+                text: "var",
+            },
+            Token {
+                ty: TokenType::While,
+                col: 67,
+                line: 1,
+                text: "while",
+            },
+            Token {
+                ty: TokenType::EOF,
+                col: 71,
+                line: 1,
+                text: "",
+            },
+        ];
+        assert_eq!(result.unwrap(), list);
+    }
+
+    #[test]
+    fn test_literals() {
+        let text = String::from("\"hello world!\" 23.23 23 abcd123");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+
+        let list = vec![
+            Token {
+                ty: TokenType::String,
+                col: 1,
+                line: 1,
+                text: "\"hello world!\"",
+            },
+            Token {
+                ty: TokenType::Number,
+                col: 16,
+                line: 1,
+                text: "23.23",
+            },
+            Token {
+                ty: TokenType::Number,
+                col: 22,
+                line: 1,
+                text: "23",
+            },
+            Token {
+                ty: TokenType::Identifier,
+                col: 25,
+                line: 1,
+                text: "abcd123",
+            },
+            Token {
+                ty: TokenType::EOF,
+                col: 31,
+                line: 1,
+                text: "",
+            },
+        ];
+        assert_eq!(result.unwrap(), list);
+    }
+
+    #[test]
+    fn test_single_character_tokens() {
+        let text = String::from("(){},.-+;/*");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+
+        let list = vec![
+            Token {
+                ty: TokenType::LeftParen,
+                col: 1,
+                line: 1,
+                text: "(",
+            },
+            Token {
+                ty: TokenType::RightParen,
+                col: 2,
+                line: 1,
+                text: ")",
+            },
+            Token {
+                ty: TokenType::LeftBrace,
+                col: 3,
+                line: 1,
+                text: "{",
+            },
+            Token {
+                ty: TokenType::RightBrace,
+                col: 4,
+                line: 1,
+                text: "}",
+            },
+            Token {
+                ty: TokenType::Comma,
+                col: 5,
+                line: 1,
+                text: ",",
+            },
+            Token {
+                ty: TokenType::Dot,
+                col: 6,
+                line: 1,
+                text: ".",
+            },
+            Token {
+                ty: TokenType::Minus,
+                col: 7,
+                line: 1,
+                text: "-",
+            },
+            Token {
+                ty: TokenType::Plus,
+                col: 8,
+                line: 1,
+                text: "+",
+            },
+            Token {
+                ty: TokenType::SemiColon,
+                col: 9,
+                line: 1,
+                text: ";",
+            },
+            Token {
+                ty: TokenType::Slash,
+                col: 10,
+                line: 1,
+                text: "/",
+            },
+            Token {
+                ty: TokenType::Star,
+                col: 11,
+                line: 1,
+                text: "*",
+            },
+            Token {
+                ty: TokenType::EOF,
+                col: 11,
+                line: 1,
+                text: "",
+            },
+        ];
+        assert_eq!(result.unwrap(), list);
+    }
+
+    #[test]
+    fn test_double_character_tokens() {
+        let text = String::from("!!====>>=<<=");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+
+        let list = vec![
+            Token {
+                ty: TokenType::Bang,
+                col: 1,
+                line: 1,
+                text: "!",
+            },
+            Token {
+                ty: TokenType::BangEqual,
+                col: 2,
+                line: 1,
+                text: "!=",
+            },
+            Token {
+                ty: TokenType::EqualEqual,
+                col: 4,
+                line: 1,
+                text: "==",
+            },
+            Token {
+                ty: TokenType::Equal,
+                col: 6,
+                line: 1,
+                text: "=",
+            },
+            Token {
+                ty: TokenType::Greater,
+                col: 7,
+                line: 1,
+                text: ">",
+            },
+            Token {
+                ty: TokenType::GreaterEqual,
+                col: 8,
+                line: 1,
+                text: ">=",
+            },
+            Token {
+                ty: TokenType::Less,
+                col: 10,
+                line: 1,
+                text: "<",
+            },
+            Token {
+                ty: TokenType::LessEqual,
+                col: 11,
+                line: 1,
+                text: "<=",
+            },
+            Token {
+                ty: TokenType::EOF,
+                col: 12,
+                line: 1,
+                text: "",
+            },
+        ];
+        assert_eq!(result.unwrap(), list);
     }
 }

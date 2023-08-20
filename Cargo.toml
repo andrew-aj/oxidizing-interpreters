@@ -1,5 +1,5 @@
 [package]
-name = "OxidizingInterpreters"
+name = "oxidizing_interpreters"
 version = "0.1.0"
 edition = "2021"
 
