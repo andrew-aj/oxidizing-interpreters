@@ -442,6 +442,42 @@ mod tests {
     }
 
     #[test]
+    fn test_num() {
+        let text = String::from("42.abc");
+        let result = scan_tokens(&text);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec![
+                Token {
+                    ty: TokenType::Number,
+                    col: 1,
+                    line: 1,
+                    text: "42",
+                },
+                Token {
+                    ty: TokenType::Dot,
+                    col: 3,
+                    line: 1,
+                    text: ".",
+                },
+                Token {
+                    ty: TokenType::Identifier,
+                    col: 4,
+                    line: 1,
+                    text: "abc",
+                },
+                Token {
+                    ty: TokenType::EOF,
+                    col: 6,
+                    line: 1,
+                    text: ""
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn test_keywords() {
         let text =
             String::from("and class else for fun if nil or print return super this true var while");
