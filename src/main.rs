@@ -2,14 +2,19 @@ use std::fs;
 
 use clap::Parser;
 
+mod bytecode;
+mod bytecode_compiler;
+mod chunk;
 mod scanner;
+mod utils;
+mod value;
 
 #[derive(Parser, Debug)]
 struct Args {
     input: String,
 }
 
-fn read_file(file_name: &String) -> String{
+fn read_file(file_name: &String) -> String {
     match fs::read_to_string(file_name) {
         Ok(input) => input,
         Err(err) => {

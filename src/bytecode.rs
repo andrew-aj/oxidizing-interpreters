@@ -1,3 +1,5 @@
+use crate::value;
+
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub enum OpCode {
     Constant(usize),
