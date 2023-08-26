@@ -1,5 +1,5 @@
-use crate::utils::Ref;
 use crate::chunk::Chunk;
+use crate::utils::Ref;
 
 use std::collections::HashMap;
 

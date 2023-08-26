@@ -89,8 +89,8 @@ impl fmt::Debug for Error {
     }
 }
 
-pub fn scan_tokens<'a>(source: &'a String) -> Result<Vec<Token<'a>>, Error> {
-    let mut scanner = Scanner::new(&source);
+pub fn scan_tokens(source: &String) -> Result<Vec<Token>, Error> {
+    let mut scanner = Scanner::new(source);
 
     scanner.scan_tokens();
 
@@ -101,7 +101,7 @@ pub fn scan_tokens<'a>(source: &'a String) -> Result<Vec<Token<'a>>, Error> {
 }
 
 impl Scanner<'_> {
-    fn new<'a>(input: &'a String) -> Scanner<'a> {
+    fn new(input: &String) -> Scanner {
         Scanner {
             source: input.char_indices().peekable(),
             original: &input,
