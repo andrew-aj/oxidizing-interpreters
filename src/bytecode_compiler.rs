@@ -29,9 +29,92 @@ pub struct ParseRule {
     precedence: Precedence,
 }
 
-pub struct Compiler {}
+struct Local<'a> {
+    name: scanner::Token<'a>,
+    depth: i64,
+    is_captured: bool,
+}
 
-impl Compiler {
+enum Upvalue {
+    Upvalue(usize),
+    Local(usize),
+}
+
+pub struct Compiler<'a> {
+    tokens: Vec<scanner::Token<'a>>,
+    token_index: usize,
+    current_class: Option<ClassCompiler>,
+    scopes: Vec<Scope<'a>>,
+    scope_index: usize,
+}
+
+impl<'a> Default for Compiler<'a> {
+    fn default() -> Self {
+        Compiler {
+            tokens: Vec::new(),
+            token_index: 0,
+            current_class: None,
+            scopes: Vec::new(),
+            scope_index: 0,
+        }
+    }
+}
+
+struct Scope<'a> {
+    current_chunk: Chunk,
+    locals: Vec<Local<'a>>,
+    upvalues: Vec<Upvalue>,
+    function: value::Function,
+    function_type: FunctionType,
+}
+
+struct ClassCompiler {
+    has_superclass: bool,
+}
+
+impl<'a> Compiler<'a> {
+    fn compile(source: &String) -> Result<value::Function, scanner::Error> {
+        let compiler: Compiler = Default::default();
+
+        match scanner::scan_tokens(&source) {
+            Ok(tokens) => {
+                compiler.tokens = tokens;
+
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn current_chunk(&mut self) -> &mut Chunk {
+        &mut self.current_chunk
+    }
+
+    fn consume(&mut self, token: scanner::TokenType, error: &str) -> Result<(), scanner::Error> {
+        if self.check(token) {
+            return Ok(());
+        }
+
+        Err(scanner::Error {
+            what: format!(
+                "Expect '{:?}' but found '{:?}': {}",
+                token,
+                self.peek(),
+                error
+            ),
+            line: self.peek().line,
+            col: self.peek().col,
+        })
+    }
+
+    fn check(&self, token: scanner::TokenType) -> bool {
+        self.peek().ty == token
+    }
+
+    fn peek(&self) -> &scanner::Token {
+        &self.tokens[self.token_index]
+    }
+
     fn get_rule(token: TokenType) -> ParseRule {
         match token {
             TokenType::LeftParen => ParseRule {
