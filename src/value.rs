@@ -1,8 +1,10 @@
 use crate::chunk::Chunk;
 use crate::utils::Ref;
+use crate::utils::RefCreate;
 
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub enum Value {
     Boolean(bool),
     Number(f64),
@@ -16,6 +18,12 @@ pub enum Value {
     Nil,
 }
 
+impl Value {
+    pub fn str_to_value(text: &str) -> Value {
+        Value::String(Ref::create(text.to_string()))
+    }
+}
+
 pub struct BoundMethod {
     receiver: Ref<Value>,
     method: Ref<Closure>,
@@ -26,15 +34,17 @@ pub struct Class {
     methods: HashMap<String, Ref<Value>>,
 }
 
+#[derive(Clone, Default)]
 pub struct Closure {
-    function: Ref<Function>,
-    upvalues: Vec<Ref<Upvalue>>,
+    pub function: Ref<Function>,
+    pub upvalues: Vec<Ref<Upvalue>>,
 }
 
+#[derive(Clone, Default)]
 pub struct Function {
-    arity: u8,
-    chunk: Chunk,
-    name: Ref<String>,
+    pub arity: u8,
+    pub chunk: Chunk,
+    pub name: Ref<String>,
 }
 
 pub struct Instance {

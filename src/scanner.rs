@@ -53,12 +53,12 @@ pub enum TokenType {
     EOF,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Token<'a> {
     pub ty: TokenType,
     pub text: &'a str,
-    pub line: u64,
-    pub col: u64,
+    pub line: usize,
+    pub col: usize,
 }
 
 struct Scanner<'a> {
@@ -67,16 +67,16 @@ struct Scanner<'a> {
     tokens: Vec<Token<'a>>,
     start: usize,
     current: usize,
-    line: u64,
-    col: u64,
+    line: usize,
+    col: usize,
     keywords: HashMap<&'static str, TokenType>,
     err: Option<Error>,
 }
 
 pub struct Error {
-    pub what: String,
-    pub line: u64,
-    pub col: u64,
+    pub message: String,
+    pub line: usize,
+    pub col: usize,
 }
 
 impl fmt::Debug for Error {
@@ -84,7 +84,7 @@ impl fmt::Debug for Error {
         write!(
             f,
             "[Line {} Column {}] Error: {}",
-            self.line, self.col, self.what
+            self.line, self.col, self.message
         )
     }
 }
@@ -234,7 +234,7 @@ impl Scanner<'_> {
             ty,
             text,
             line: self.line,
-            col: self.col - text.len() as u64 + 1,
+            col: self.col - text.len() + 1,
         })
     }
 
@@ -308,7 +308,7 @@ impl Scanner<'_> {
                     self.number();
                 } else {
                     self.err = Some(Error {
-                        what: format!("Unexpected character {}", c),
+                        message: format!("Unexpected character {}", c),
                         line: self.line,
                         col: self.col,
                     });
@@ -328,7 +328,7 @@ impl Scanner<'_> {
 
         if self.is_at_end() {
             self.err = Some(Error {
-                what: "Unterminated string.".to_string(),
+                message: "Unterminated string.".to_string(),
                 line: self.line,
                 col: self.col,
             });
