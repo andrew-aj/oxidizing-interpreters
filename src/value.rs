@@ -22,6 +22,10 @@ impl Value {
     pub fn str_to_value(text: &str) -> Value {
         Value::String(Ref::create(text.to_string()))
     }
+
+    pub fn num_to_value(num: f64) -> Value {
+        Value::Number(num)
+    }
 }
 
 pub struct BoundMethod {

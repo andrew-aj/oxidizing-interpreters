@@ -32,21 +32,22 @@ pub enum Precedence {
     Primary,
 }
 
-type ParseFn = fn(&mut Compiler, bool);
+type ParseFn<'b> = fn(&mut Compiler<'b>, bool) -> Result<(), scanner::Error>;
 
-pub struct ParseRule {
-    prefix: Option<ParseFn>,
-    infix: Option<ParseFn>,
+pub struct ParseRule<'b> {
+    prefix: Option<ParseFn<'b>>,
+    infix: Option<ParseFn<'b>>,
     precedence: Precedence,
 }
 
+#[derive(Copy, Clone)]
 struct Local<'a> {
     name: scanner::Token<'a>,
     depth: i64,
     is_captured: bool,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 enum Upvalue {
     Upvalue(usize),
     Local(usize),
@@ -120,29 +121,39 @@ struct ClassCompiler {
 }
 
 impl<'a> Compiler<'a> {
-    fn compile(source: &String) -> Result<value::Function, scanner::Error> {
-        let compiler: Compiler = Default::default();
+    fn compile(source: &'a String) -> Result<value::Function, scanner::Error> {
+        let mut compiler: Compiler<'a> = Default::default();
 
         match scanner::scan_tokens(&source) {
             Ok(tokens) => {
                 compiler.tokens = tokens;
 
-                Ok(())
+                while !compiler.match_(TokenType::EOF) {
+                    compiler.declaration()?;
+                }
+
+                compiler.emit_return();
+
+                Ok(std::mem::take(&mut compiler.current_scope().function))
             }
             Err(err) => Err(err),
         }
     }
 
     fn enclosing_scope(&mut self) -> &mut Scope<'a> {
-        &mut self
-            .scopes
-            .get(self.scope_index - 1)
+        self.scopes
+            .get_mut(self.scope_index - 1)
             .expect("Error in enclosing scope implementation")
     }
 
     fn current_scope(&mut self) -> &mut Scope<'a> {
-        &mut self
-            .scopes
+        self.scopes
+            .get_mut(self.scope_index)
+            .expect("Error in current scope implementation")
+    }
+
+    fn current_scope_imm(&self) -> &Scope<'a> {
+        self.scopes
             .get(self.scope_index)
             .expect("Error in current scope implementation")
     }
@@ -151,7 +162,7 @@ impl<'a> Compiler<'a> {
         &mut self.current_scope().function.borrow_mut().chunk
     }
 
-    fn scope_depth(&self) -> i64 {
+    fn scope_depth(&mut self) -> i64 {
         self.current_scope().scope_depth
     }
 
@@ -172,19 +183,19 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn previous(&self) -> &scanner::Token {
+    fn previous(&self) -> &scanner::Token<'a> {
         assert!(self.token_index != 0);
         &self.tokens[self.token_index - 1]
     }
 
-    fn advance(&self) {
+    fn advance(&mut self) {
         match self.peek().ty {
             scanner::TokenType::EOF => (),
             _ => self.token_index += 1,
         };
     }
 
-    fn match_(&self, token: scanner::TokenType) -> bool {
+    fn match_(&mut self, token: scanner::TokenType) -> bool {
         match !self.check(token) {
             true => false,
             false => {
@@ -216,6 +227,34 @@ impl<'a> Compiler<'a> {
         self.current_chunk().write_chunk((op, line));
     }
 
+    fn emit_jump(&mut self, op: bytecode::OpCode) -> usize {
+        self.emit_code(op, self.previous().line);
+        self.current_chunk().code.len() - 1
+    }
+
+    fn emit_loop(&mut self, loop_start: usize) {
+        let offset = self.current_chunk().code.len() - loop_start + 2;
+        self.emit_code(bytecode::OpCode::Loop(offset), self.previous().line);
+    }
+
+    fn patch_jump(&mut self, offset: usize) -> Result<(), scanner::Error> {
+        let jump = self.current_chunk().code.len() - offset - 1;
+
+        self.current_chunk().code[offset] = match self.current_chunk().code[offset] {
+            (bytecode::OpCode::JumpIfFalse(_), i) => (bytecode::OpCode::JumpIfFalse(jump), i),
+            (bytecode::OpCode::Jump(_), i) => (bytecode::OpCode::Jump(jump), i),
+            (_, _) => {
+                return Err(scanner::Error {
+                    message: "Could not find jump!".to_string(),
+                    line: self.previous().line,
+                    col: self.previous().col,
+                })
+            }
+        };
+
+        Ok(())
+    }
+
     fn begin_scope(&mut self) {
         self.current_scope().scope_depth += 1;
     }
@@ -223,20 +262,25 @@ impl<'a> Compiler<'a> {
     fn end_scope(&mut self) {
         self.current_scope().scope_depth -= 1;
 
-        let old_locals = self
-            .current_scope()
-            .locals
-            .iter()
+        let scope_depth = self.current_scope().scope_depth;
+
+        let line = self.previous().line;
+
+        let old_locals: Vec<Local<'_>> = self
+            .current_scope_imm()
+            .locals.
+            clone()
+            .into_iter()
             .rev()
-            .take_while(|local| local.depth > self.current_scope().scope_depth);
+            .take_while(|local| local.depth > scope_depth).collect();
 
         let mut size = 0;
 
         for local in old_locals {
             if local.is_captured {
-                self.emit_code(bytecode::OpCode::CloseUpvalue, self.previous().line);
+                self.emit_code(bytecode::OpCode::CloseUpvalue, line);
             } else {
-                self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+                self.emit_code(bytecode::OpCode::Pop, line);
             }
 
             size += 1;
@@ -251,7 +295,7 @@ impl<'a> Compiler<'a> {
         self.current_chunk().add_constant(name)
     }
 
-    fn add_local(&mut self, name: scanner::Token) {
+    fn add_local(&mut self, name: scanner::Token<'a>) {
         self.current_scope().locals.push(Local {
             name,
             depth: -1,
@@ -266,11 +310,12 @@ impl<'a> Compiler<'a> {
 
         let name = self.previous().clone();
 
-        let scope_error = self.current_scope().locals.iter().rev().any(|var| {
-            var.depth != -1
-                && var.depth < self.current_scope().scope_depth
-                && var.name.text == name.text
-        });
+        let scope_depth = self.current_scope().scope_depth;
+
+        let scope_error =
+            self.current_scope().locals.iter().rev().any(|var| {
+                var.depth != -1 && var.depth < scope_depth && var.name.text == name.text
+            });
 
         if scope_error {
             return Err(scanner::Error {
@@ -303,7 +348,7 @@ impl<'a> Compiler<'a> {
 
         self.current_scope()
             .locals
-            .last()
+            .last_mut()
             .expect("Local variables list is empty")
             .depth = self.current_scope().scope_depth;
     }
@@ -312,7 +357,7 @@ impl<'a> Compiler<'a> {
         self.emit_code(bytecode::OpCode::DefineGlobal(global), self.previous().line);
     }
 
-    fn get_rule(token: TokenType) -> ParseRule {
+    fn get_rule(token: TokenType) -> ParseRule<'a> {
         match token {
             TokenType::LeftParen => ParseRule {
                 prefix: Some(Compiler::grouping),
@@ -559,7 +604,7 @@ impl<'a> Compiler<'a> {
 
     fn class_declaration(&mut self) -> Result<(), scanner::Error> {
         self.consume(TokenType::Identifier, "Expected class name.")?;
-        let class_name = self.previous();
+        let class_name = self.previous().clone();
 
         let name_constant = self.identifier_constant(Value::str_to_value(class_name.text));
         self.declare_variable()?;
@@ -670,7 +715,7 @@ impl<'a> Compiler<'a> {
 
         let closure = value::Closure {
             function: Ref::create(function),
-            upvalues: Vec::new(),
+            upvalues: upvals.into_iter().map(|val| Ref::create(val)).collect(),
         };
         let constant = self
             .current_chunk()
@@ -729,7 +774,20 @@ impl<'a> Compiler<'a> {
             self.print_statement()?;
         } else if self.match_(TokenType::For) {
             self.for_statement()?;
+        } else if self.match_(TokenType::If) {
+            self.if_statement()?;
+        } else if self.match_(TokenType::Return) {
+            self.return_statement()?;
+        } else if self.match_(TokenType::While) {
+            self.while_statement()?;
+        } else if self.match_(TokenType::LeftBrace) {
+            self.begin_scope();
+            self.block()?;
+            self.end_scope();
+        } else {
+            self.expression_statement()?;
         }
+
         Ok(())
     }
 
@@ -737,6 +795,74 @@ impl<'a> Compiler<'a> {
         self.expression()?;
         self.consume(TokenType::SemiColon, "Expect ';' after expression.")?;
         self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+
+        Ok(())
+    }
+
+    fn return_statement(&mut self) -> Result<(), scanner::Error> {
+        if self.current_scope().function_type == FunctionType::Script {
+            return Err(scanner::Error {
+                message: "Can't return from top-level code.".to_string(),
+                line: self.previous().line,
+                col: self.previous().col,
+            });
+        }
+
+        if self.match_(TokenType::SemiColon) {
+            self.emit_return();
+        } else {
+            if self.current_scope().function_type == FunctionType::Initializer {
+                return Err(scanner::Error {
+                    message: "Can't return from a value from an initializer.".to_string(),
+                    line: self.previous().line,
+                    col: self.previous().col,
+                });
+            }
+
+            self.expression()?;
+            self.consume(TokenType::SemiColon, "Expect ';' after return value.")?;
+            self.emit_code(bytecode::OpCode::Return, self.previous().line);
+        }
+
+        Ok(())
+    }
+
+    fn while_statement(&mut self) -> Result<(), scanner::Error> {
+        let loop_start = self.current_chunk().code.len();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.")?;
+        self.expression()?;
+        self.consume(TokenType::RightParen, "Expect ')' after condition.")?;
+
+        let exit_jump = self.emit_jump(bytecode::OpCode::JumpIfFalse(0));
+        self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+        self.statement()?;
+        self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump)?;
+        self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+
+        Ok(())
+    }
+
+    fn if_statement(&mut self) -> Result<(), scanner::Error> {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.")?;
+        self.expression()?;
+        self.consume(TokenType::RightParen, "Expect ')' after condition.")?;
+
+        let then_jump = self.emit_jump(bytecode::OpCode::JumpIfFalse(0));
+        self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+        self.statement()?;
+
+        let else_jump = self.emit_jump(bytecode::OpCode::Jump(0));
+
+        self.patch_jump(then_jump)?;
+        self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+
+        if self.match_(TokenType::Else) {
+            self.statement()?;
+        }
+
+        self.patch_jump(else_jump)?;
 
         Ok(())
     }
@@ -752,6 +878,38 @@ impl<'a> Compiler<'a> {
             self.expression_statement()?;
         }
 
+        let mut loop_start = self.current_chunk().code.len();
+        let mut exit_jump = None;
+        if !self.match_(TokenType::SemiColon) {
+            self.expression()?;
+            self.consume(TokenType::SemiColon, "Expect ';' after loop condition.")?;
+
+            exit_jump = Some(self.emit_jump(bytecode::OpCode::JumpIfFalse(0)));
+            self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+        }
+
+        if !self.match_(TokenType::RightParen) {
+            let body_jump = self.emit_jump(bytecode::OpCode::Jump(0));
+            let increment_start = self.current_chunk().code.len() + 1;
+
+            self.expression()?;
+            self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+            self.consume(TokenType::RightParen, "Expect ')' after for clauses.")?;
+
+            self.emit_loop(loop_start);
+            loop_start = increment_start;
+            self.patch_jump(body_jump)?;
+        }
+
+        self.statement()?;
+        self.emit_loop(loop_start);
+
+        if let Some(i) = exit_jump {
+            self.patch_jump(i)?;
+            self.emit_code(bytecode::OpCode::Pop, self.previous().line);
+        }
+
+        self.end_scope();
 
         Ok(())
     }
@@ -768,15 +926,25 @@ impl<'a> Compiler<'a> {
         self.parse_precedence(Precedence::Assignment)
     }
 
-    fn grouping(&mut self, can_assign: bool) {}
+    fn grouping(self: &mut Compiler<'a>, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn call(&mut self, can_assign: bool) {}
+    fn call(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn dot(&mut self, can_assign: bool) {}
+    fn dot(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn unary(&mut self, can_assign: bool) {}
+    fn unary(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn binary(&mut self, can_assign: bool) {}
+    fn binary(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
     fn add_upvalue(&mut self, val: Upvalue) -> usize {
         self.current_scope()
@@ -878,15 +1046,53 @@ impl<'a> Compiler<'a> {
         self.named_variable(self.previous().clone(), can_assign)
     }
 
-    fn string(&mut self, can_assign: bool) {}
+    fn string(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn number(&mut self, can_assign: bool) {}
+    fn number(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        match self.previous().ty {
+            TokenType::Number => {
+                let parsed: f64 = match self.previous().text.parse::<f64>() {
+                    Ok(i) => i,
+                    Err(_) => {
+                        return Err(scanner::Error {
+                            message: "Cannot parse number.".to_string(),
+                            line: self.previous().line,
+                            col: self.previous().col,
+                        })
+                    }
+                };
 
-    fn and(&mut self, can_assign: bool) {}
+                let constant_index = self
+                    .current_chunk()
+                    .add_constant(Value::num_to_value(parsed));
+                self.emit_code(
+                    bytecode::OpCode::Constant(constant_index),
+                    self.previous().line,
+                );
 
-    fn or(&mut self, can_assign: bool) {}
+                Ok(())
+            }
+            _ => Err(scanner::Error {
+                message: "Cannot parse token that is not a number.".to_string(),
+                line: self.previous().line,
+                col: self.previous().col,
+            }),
+        }
+    }
 
-    fn literal(&mut self, can_assign: bool) {}
+    fn and(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
+
+    fn or(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
+
+    fn literal(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
     fn synthetic_token(text: &str) -> scanner::Token {
         scanner::Token {
@@ -897,7 +1103,11 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn super_(&mut self, can_assign: bool) {}
+    fn super_(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 
-    fn this(&mut self, can_assign: bool) {}
+    fn this(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        Ok(())
+    }
 }

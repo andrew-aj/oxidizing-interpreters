@@ -3,8 +3,8 @@ use crate::value;
 
 #[derive(Default, Clone)]
 pub struct Chunk {
-    code: Vec<(OpCode, usize)>,
-    constants: Vec<value::Value>,
+    pub code: Vec<(OpCode, usize)>,
+    pub constants: Vec<value::Value>,
 }
 
 impl Chunk {
