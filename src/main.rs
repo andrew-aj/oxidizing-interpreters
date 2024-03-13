@@ -2,12 +2,15 @@ use std::fs;
 
 use clap::Parser;
 
+use crate::bytecode_compiler::Compiler;
+
 mod bytecode;
 mod bytecode_compiler;
 mod chunk;
 mod scanner;
 mod utils;
 mod value;
+mod debug;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -30,7 +33,5 @@ fn main() {
 
     let source = read_file(&file_name);
 
-    let compiled = scanner::scan_tokens(&source);
-
-    println!("{:?}", compiled);
+    let _ = Compiler::compile(&source);
 }

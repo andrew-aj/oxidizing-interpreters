@@ -9,7 +9,7 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn add_constant(&mut self, value: value::Value) -> usize {
-        if let Some(index) = self.find_constant(value) {
+        if let Some(index) = self.find_constant(value.clone()) {
             index
         } else {
             self.constants.push(value);

@@ -1,6 +1,6 @@
-use crate::value;
+use crate::bytecode_compiler::Upvalue;
 
-#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub enum OpCode {
     Constant(usize),
     Nil,
@@ -33,7 +33,7 @@ pub enum OpCode {
     Call(usize),
     Invoke(usize),
     SuperInvoke(usize),
-    Closure(usize),
+    Closure(usize, Vec<Upvalue>),
     CloseUpvalue,
     Return,
     Class(usize),

@@ -47,8 +47,8 @@ struct Local<'a> {
     is_captured: bool,
 }
 
-#[derive(PartialEq, Eq, Clone)]
-enum Upvalue {
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum Upvalue {
     Upvalue(usize),
     Local(usize),
 }
@@ -121,7 +121,7 @@ struct ClassCompiler {
 }
 
 impl<'a> Compiler<'a> {
-    fn compile(source: &'a String) -> Result<value::Function, scanner::Error> {
+    pub fn compile(source: &'a String) -> Result<value::Function, scanner::Error> {
         let mut compiler: Compiler<'a> = Default::default();
 
         match scanner::scan_tokens(&source) {
@@ -715,13 +715,13 @@ impl<'a> Compiler<'a> {
 
         let closure = value::Closure {
             function: Ref::create(function),
-            upvalues: upvals.into_iter().map(|val| Ref::create(val)).collect(),
+            upvalues: Vec::new(),
         };
         let constant = self
             .current_chunk()
             .add_constant(Value::Closure(Ref::create(closure)));
 
-        self.emit_code(bytecode::OpCode::Closure(constant), self.previous().line);
+        self.emit_code(bytecode::OpCode::Closure(constant, upvals), self.previous().line);
 
         Ok(())
     }
