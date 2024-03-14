@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, ops::DerefMut};
+use std::{borrow::{BorrowMut, Borrow}, ops::DerefMut};
 
 use crate::{
     bytecode,
@@ -67,7 +67,7 @@ impl<'a> Default for Compiler<'a> {
             tokens: Vec::new(),
             token_index: 0,
             current_class: None,
-            scopes: Vec::new(),
+            scopes: vec![Scope::init_scope("", FunctionType::Script)],
             scope_index: 0,
         }
     }
@@ -132,7 +132,10 @@ impl<'a> Compiler<'a> {
                     compiler.declaration()?;
                 }
 
+
                 compiler.emit_return();
+
+                compiler.current_chunk().disassemble_chunk("");
 
                 Ok(std::mem::take(&mut compiler.current_scope().function))
             }
@@ -168,6 +171,7 @@ impl<'a> Compiler<'a> {
 
     fn consume(&mut self, token: scanner::TokenType, error: &str) -> Result<(), scanner::Error> {
         if self.check(token) {
+            self.advance();
             return Ok(());
         }
 
@@ -766,6 +770,7 @@ impl<'a> Compiler<'a> {
         )?;
         self.define_variable(global);
 
+
         Ok(())
     }
 
@@ -1047,7 +1052,21 @@ impl<'a> Compiler<'a> {
     }
 
     fn string(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
-        Ok(())
+        let token = self.previous().clone();
+        match token.ty {
+            TokenType::String => {
+                let text = &token.text[1..token.text.len()-1];
+                let val = Value::str_to_value(text);
+                let index = self.current_chunk().add_constant(val);
+                self.emit_code(bytecode::OpCode::Constant(index), token.line);
+                Ok(())
+            },
+            _ => Err(scanner::Error {
+                message: "Cannot parse token that is not a string literal.".to_string(),
+                line: self.previous().line,
+                col: self.previous().col,
+            }),
+        }
     }
 
     fn number(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
