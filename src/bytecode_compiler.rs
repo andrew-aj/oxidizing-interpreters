@@ -1,4 +1,4 @@
-use std::{borrow::{BorrowMut, Borrow}, ops::DerefMut};
+use std::{borrow::BorrowMut, mem::transmute, ops::Add};
 
 use crate::{
     bytecode,
@@ -17,9 +17,10 @@ pub enum FunctionType {
     Script,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[repr(i8)]
 pub enum Precedence {
-    None,
+    None = 0,
     Assignment,
     Or,
     And,
@@ -30,6 +31,22 @@ pub enum Precedence {
     Unary,
     Call,
     Primary,
+}
+
+impl Precedence {
+    fn succ(&self) -> Precedence {
+        match self {
+            Precedence::Primary => Precedence::None,
+            _ => unsafe { transmute(self.clone() as i8 + 1) },
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! emit {
+    ($self:ident, $opcode:expr) => {
+        $self.emit_code($opcode, $self.previous().line)
+    };
 }
 
 type ParseFn<'b> = fn(&mut Compiler<'b>, bool) -> Result<(), scanner::Error>;
@@ -131,7 +148,6 @@ impl<'a> Compiler<'a> {
                 while !compiler.match_(TokenType::EOF) {
                     compiler.declaration()?;
                 }
-
 
                 compiler.emit_return();
 
@@ -272,11 +288,12 @@ impl<'a> Compiler<'a> {
 
         let old_locals: Vec<Local<'_>> = self
             .current_scope_imm()
-            .locals.
-            clone()
+            .locals
+            .clone()
             .into_iter()
             .rev()
-            .take_while(|local| local.depth > scope_depth).collect();
+            .take_while(|local| local.depth > scope_depth)
+            .collect();
 
         let mut size = 0;
 
@@ -359,6 +376,28 @@ impl<'a> Compiler<'a> {
 
     fn define_variable(&mut self, global: usize) {
         self.emit_code(bytecode::OpCode::DefineGlobal(global), self.previous().line);
+    }
+
+    fn argument_list(&mut self) -> Result<u8, scanner::Error> {
+        let mut arg_count = 0;
+        if !self.check(TokenType::RightParen) {
+            loop {
+                self.expression()?;
+                if arg_count == 255 {
+                    return Err(scanner::Error {
+                        message: "Can't have more than 255 parameters".to_string(),
+                        line: self.previous().line,
+                        col: self.previous().col,
+                    });
+                }
+                arg_count += 1;
+                if !self.match_(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.")?;
+        Ok(arg_count)
     }
 
     fn get_rule(token: TokenType) -> ParseRule<'a> {
@@ -565,9 +604,7 @@ impl<'a> Compiler<'a> {
         self.advance();
         let can_assign = precedence <= Precedence::Assignment;
         match Compiler::get_rule(self.previous().ty).prefix {
-            Some(rule) => {
-                rule(self, can_assign);
-            }
+            Some(rule) => rule(self, can_assign),
             None => {
                 return Err(scanner::Error {
                     message: "Expected expression.".to_string(),
@@ -575,7 +612,7 @@ impl<'a> Compiler<'a> {
                     col: self.previous().col,
                 })
             }
-        };
+        }?;
 
         while precedence <= Compiler::get_rule(self.peek().ty).precedence {
             self.advance();
@@ -588,7 +625,7 @@ impl<'a> Compiler<'a> {
                         col: self.previous().col,
                     })
                 }
-            };
+            }?;
         }
 
         Ok(())
@@ -623,7 +660,7 @@ impl<'a> Compiler<'a> {
 
         if self.match_(TokenType::Less) {
             self.consume(TokenType::Identifier, "Expected superclass name.")?;
-            self.variable(false);
+            self.variable(false)?;
 
             if class_name.text == self.previous().text {
                 return Err(scanner::Error {
@@ -633,7 +670,7 @@ impl<'a> Compiler<'a> {
                 });
             }
 
-            self.named_variable(class_name.clone(), false);
+            self.named_variable(class_name.clone(), false)?;
             self.emit_code(bytecode::OpCode::Inherit, self.previous().line);
 
             if let Some(class) = &mut self.current_class {
@@ -651,7 +688,7 @@ impl<'a> Compiler<'a> {
             self.define_variable(0);
         }
 
-        self.named_variable(class_name.clone(), false);
+        self.named_variable(class_name.clone(), false)?;
         self.consume(TokenType::LeftBrace, "Expect '{' before class body.")?;
 
         while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
@@ -690,14 +727,14 @@ impl<'a> Compiler<'a> {
         self.consume(TokenType::LeftParen, "Expect '(' after function name.")?;
         if !self.check(TokenType::RightParen) {
             loop {
-                self.current_scope().function.arity += 1;
-                if self.current_scope().function.arity > 255 {
+                if self.current_scope().function.arity == 255 {
                     return Err(scanner::Error {
                         message: "Can't have more than 255 parameters".to_string(),
                         line: self.previous().line,
                         col: self.previous().col,
                     });
                 }
+                self.current_scope().function.arity += 1;
 
                 let constant = self.parse_variable("Expect parameter name.")?;
                 self.define_variable(constant);
@@ -725,7 +762,10 @@ impl<'a> Compiler<'a> {
             .current_chunk()
             .add_constant(Value::Closure(Ref::create(closure)));
 
-        self.emit_code(bytecode::OpCode::Closure(constant, upvals), self.previous().line);
+        self.emit_code(
+            bytecode::OpCode::Closure(constant, upvals),
+            self.previous().line,
+        );
 
         Ok(())
     }
@@ -769,7 +809,6 @@ impl<'a> Compiler<'a> {
             "Expect ';' after variable declaration.",
         )?;
         self.define_variable(global);
-
 
         Ok(())
     }
@@ -931,23 +970,91 @@ impl<'a> Compiler<'a> {
         self.parse_precedence(Precedence::Assignment)
     }
 
-    fn grouping(self: &mut Compiler<'a>, can_assign: bool) -> Result<(), scanner::Error> {
+    fn grouping(self: &mut Compiler<'a>, _can_assign: bool) -> Result<(), scanner::Error> {
+        self.expression()?;
+        self.consume(TokenType::RightParen, "Expect ')' after expression.")?;
         Ok(())
     }
 
-    fn call(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn call(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        let arg_count = self.argument_list()?;
+        self.emit_code(bytecode::OpCode::Call(arg_count), self.previous().line);
         Ok(())
     }
 
     fn dot(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+        self.consume(TokenType::Identifier, "Expect property name after '.'.")?;
+        let name = self.identifier_constant(Value::str_to_value(self.previous().text));
+
+        if can_assign && self.match_(TokenType::Equal) {
+            self.expression()?;
+            self.emit_code(bytecode::OpCode::SetProperty(name), self.previous().line);
+        } else if self.match_(TokenType::LeftParen) {
+            let arg_count = self.argument_list()?;
+            self.emit_code(
+                bytecode::OpCode::Invoke(name, arg_count),
+                self.previous().line,
+            );
+        } else {
+            self.emit_code(bytecode::OpCode::GetProperty(name), self.previous().line);
+        }
         Ok(())
     }
 
-    fn unary(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn unary(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        let operator_type = self.previous().ty;
+
+        self.parse_precedence(Precedence::Unary)?;
+
+        match operator_type {
+            TokenType::Bang => self.emit_code(bytecode::OpCode::Not, self.previous().line),
+            TokenType::Minus => self.emit_code(bytecode::OpCode::Negate, self.previous().line),
+            _ => {
+                return Err(scanner::Error {
+                    message: format!("Invalid unary operator token {:?}", operator_type),
+                    line: self.previous().line,
+                    col: self.previous().col,
+                })
+            }
+        }
         Ok(())
     }
 
-    fn binary(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn binary(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        let operator_type = self.previous().ty;
+        let rule = Compiler::get_rule(operator_type);
+
+        self.parse_precedence(rule.precedence.succ())?;
+
+        match operator_type {
+            TokenType::BangEqual => {
+                emit!(self, bytecode::OpCode::Equal);
+                emit!(self, bytecode::OpCode::Not)
+            }
+            TokenType::EqualEqual => emit!(self, bytecode::OpCode::Equal),
+            TokenType::Greater => emit!(self, bytecode::OpCode::Greater),
+            TokenType::GreaterEqual => {
+                emit!(self, bytecode::OpCode::Less);
+                emit!(self, bytecode::OpCode::Not);
+            }
+            TokenType::Less => emit!(self, bytecode::OpCode::Less),
+            TokenType::LessEqual => {
+                emit!(self, bytecode::OpCode::Greater);
+                emit!(self, bytecode::OpCode::Not);
+            }
+            TokenType::Plus => emit!(self, bytecode::OpCode::Add),
+            TokenType::Minus => emit!(self, bytecode::OpCode::Subtract),
+            TokenType::Star => emit!(self, bytecode::OpCode::Multiply),
+            TokenType::Slash => emit!(self, bytecode::OpCode::Divide),
+            _ => {
+                return Err(scanner::Error {
+                    message: format!("Invalid binaryoperator token {:?}", operator_type),
+                    line: self.previous().line,
+                    col: self.previous().col,
+                })
+            }
+        }
+
         Ok(())
     }
 
@@ -1016,32 +1123,32 @@ impl<'a> Compiler<'a> {
         name: scanner::Token,
         can_assign: bool,
     ) -> Result<(), scanner::Error> {
-        let getOp: bytecode::OpCode;
-        let setOp: bytecode::OpCode;
+        let get_op: bytecode::OpCode;
+        let set_op: bytecode::OpCode;
 
         let arg = self.resolve_local(&name)?;
         match arg {
             Some(i) => {
-                getOp = bytecode::OpCode::GetLocal(i);
-                setOp = bytecode::OpCode::SetLocal(i);
+                get_op = bytecode::OpCode::GetLocal(i);
+                set_op = bytecode::OpCode::SetLocal(i);
             }
             None => {
                 if let Some(i) = self.resolve_upvalue(&name)? {
-                    getOp = bytecode::OpCode::GetUpvalue(i);
-                    setOp = bytecode::OpCode::SetUpvalue(i);
+                    get_op = bytecode::OpCode::GetUpvalue(i);
+                    set_op = bytecode::OpCode::SetUpvalue(i);
                 } else {
                     let i = self.identifier_constant(Value::str_to_value(name.text));
-                    getOp = bytecode::OpCode::GetUpvalue(i);
-                    setOp = bytecode::OpCode::SetUpvalue(i);
+                    get_op = bytecode::OpCode::GetUpvalue(i);
+                    set_op = bytecode::OpCode::SetUpvalue(i);
                 }
             }
         };
 
         if can_assign && self.match_(TokenType::Equal) {
             self.expression()?;
-            self.emit_code(setOp, name.line);
+            self.emit_code(set_op, name.line);
         } else {
-            self.emit_code(getOp, name.line);
+            self.emit_code(get_op, name.line);
         }
 
         Ok(())
@@ -1051,16 +1158,16 @@ impl<'a> Compiler<'a> {
         self.named_variable(self.previous().clone(), can_assign)
     }
 
-    fn string(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn string(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
         let token = self.previous().clone();
         match token.ty {
             TokenType::String => {
-                let text = &token.text[1..token.text.len()-1];
+                let text = &token.text[1..token.text.len() - 1];
                 let val = Value::str_to_value(text);
                 let index = self.current_chunk().add_constant(val);
                 self.emit_code(bytecode::OpCode::Constant(index), token.line);
                 Ok(())
-            },
+            }
             _ => Err(scanner::Error {
                 message: "Cannot parse token that is not a string literal.".to_string(),
                 line: self.previous().line,
@@ -1069,7 +1176,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn number(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn number(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
         match self.previous().ty {
             TokenType::Number => {
                 let parsed: f64 = match self.previous().text.parse::<f64>() {
@@ -1101,15 +1208,39 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn and(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn and(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        let end_jump = self.emit_jump(bytecode::OpCode::JumpIfFalse(0));
+        emit!(self, bytecode::OpCode::Pop);
+        self.parse_precedence(Precedence::And)?;
+        self.patch_jump(end_jump)?;
         Ok(())
     }
 
-    fn or(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn or(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        let else_jump = self.emit_jump(bytecode::OpCode::JumpIfFalse(0));
+        let end_jump = self.emit_jump(bytecode::OpCode::JumpIfFalse(0));
+
+        self.patch_jump(else_jump)?;
+        emit!(self, bytecode::OpCode::Pop);
+
+        self.parse_precedence(Precedence::Or)?;
+        self.patch_jump(end_jump)?;
         Ok(())
     }
 
-    fn literal(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn literal(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        match self.previous().ty {
+            TokenType::False => emit!(self, bytecode::OpCode::False),
+            TokenType::Nil => emit!(self, bytecode::OpCode::Nil),
+            TokenType::True => emit!(self, bytecode::OpCode::True),
+            _ => {
+                return Err(scanner::Error {
+                    message: "Invalid literal.".to_string(),
+                    line: self.previous().line,
+                    col: self.previous().col,
+                })
+            }
+        }
         Ok(())
     }
 
@@ -1126,7 +1257,16 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn this(&mut self, can_assign: bool) -> Result<(), scanner::Error> {
+    fn this(&mut self, _can_assign: bool) -> Result<(), scanner::Error> {
+        if let Some(_) = self.current_class {
+            self.variable(false)?;
+        } else {
+            return Err(scanner::Error {
+                message: "Can't use 'this' outside of a class.".to_string(),
+                line: self.previous().line,
+                col: self.previous().col,
+            });
+        }
         Ok(())
     }
 }
