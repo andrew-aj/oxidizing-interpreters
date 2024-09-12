@@ -276,11 +276,13 @@ impl<'a> Compiler<'a> {
     }
 
     fn begin_scope(&mut self) {
+        self.scope_index += 1;
         self.current_scope().scope_depth += 1;
     }
 
     fn end_scope(&mut self) {
         self.current_scope().scope_depth -= 1;
+        self.scope_index -= 1;
 
         let scope_depth = self.current_scope().scope_depth;
 
@@ -375,6 +377,10 @@ impl<'a> Compiler<'a> {
     }
 
     fn define_variable(&mut self, global: usize) {
+        if self.current_scope().scope_depth > 0 {
+            self.mark_initialized();
+            return;
+        }
         self.emit_code(bytecode::OpCode::DefineGlobal(global), self.previous().line);
     }
 

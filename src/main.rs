@@ -2,15 +2,17 @@ use std::fs;
 
 use clap::Parser;
 
-use crate::bytecode_compiler::Compiler;
+use crate::parser::Compiler;
 
+mod ast;
+mod parser;
 mod bytecode;
 mod bytecode_compiler;
 mod chunk;
+mod debug;
 mod scanner;
 mod utils;
 mod value;
-mod debug;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -33,5 +35,7 @@ fn main() {
 
     let source = read_file(&file_name);
 
-    let _ = Compiler::compile(&source);
+    let mut compiler = Compiler::default();
+
+    let _ = compiler.compile(&source);
 }
